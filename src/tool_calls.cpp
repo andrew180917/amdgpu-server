@@ -154,24 +154,55 @@ json parseToolCallJsonObject(const std::string& raw) {
     return json();
 }
 
+json normalizeToolCallArguments(const json& arguments) {
+    if (arguments.is_string()) {
+        const std::string raw = arguments.get<std::string>();
+        json parsed = parseToolCallJsonObject(raw);
+        if (!parsed.is_null()) {
+            return parsed;
+        }
+        try {
+            return json::parse(raw);
+        } catch (const json::exception&) {
+            return json{{"raw", raw}};
+        }
+    }
+    return arguments;
+}
+
+std::string toolCallArgumentsString(const json& arguments) {
+    if (arguments.is_string()) {
+        return arguments.get<std::string>();
+    }
+    if (arguments.is_object() || arguments.is_array()) {
+        return arguments.dump();
+    }
+    return arguments.dump();
+}
+
 std::optional<ToolCall> toolCallFromJsonObject(const json& tool_call_obj) {
     if (!tool_call_obj.is_object()) {
         return std::nullopt;
     }
 
     ToolCall tool_call;
+    const json* fields = &tool_call_obj;
 
-    if (tool_call_obj.contains("name") && tool_call_obj["name"].is_string()) {
-        tool_call.name = tool_call_obj["name"];
+    if (tool_call_obj.contains("function") && tool_call_obj["function"].is_object()) {
+        fields = &tool_call_obj["function"];
+    }
+
+    if (fields->contains("name") && (*fields)["name"].is_string()) {
+        tool_call.name = (*fields)["name"];
     } else {
         std::cerr << "[WARNING] Tool call missing 'name' field, skipping" << std::endl;
         return std::nullopt;
     }
 
-    if (tool_call_obj.contains("arguments")) {
-        tool_call.arguments = tool_call_obj["arguments"];
-    } else if (tool_call_obj.contains("parameters")) {
-        tool_call.arguments = tool_call_obj["parameters"];
+    if (fields->contains("arguments")) {
+        tool_call.arguments = normalizeToolCallArguments((*fields)["arguments"]);
+    } else if (fields->contains("parameters")) {
+        tool_call.arguments = normalizeToolCallArguments((*fields)["parameters"]);
     } else {
         std::cerr << "[WARNING] Tool call missing 'arguments' or 'parameters' field, skipping" << std::endl;
         return std::nullopt;
@@ -297,13 +328,57 @@ json formatToolCallsForOpenAI(const std::vector<ToolCall>& tool_calls) {
             {"type", "function"},
             {"function", {
                 {"name", tool_call.name},
-                {"arguments", tool_call.arguments.dump()}
+                {"arguments", toolCallArgumentsString(tool_call.arguments)}
             }}
         };
         openai_tool_calls.push_back(openai_tool_call);
     }
 
     return openai_tool_calls;
+}
+
+std::vector<std::string> buildToolCallStreamChunks(const json& openai_tool_calls,
+                                                   const std::string& model_id) {
+    std::vector<std::string> chunks;
+    if (!openai_tool_calls.is_array() || openai_tool_calls.empty()) {
+        return chunks;
+    }
+
+    const std::time_t created = std::time(nullptr);
+    const std::string completion_id = "chatcmpl-" + std::to_string(created);
+
+    for (size_t i = 0; i < openai_tool_calls.size(); ++i) {
+        const json& tool_call = openai_tool_calls[i];
+        if (!tool_call.is_object() || !tool_call.contains("function")) {
+            continue;
+        }
+
+        json chunk = {
+            {"id", completion_id},
+            {"object", "chat.completion.chunk"},
+            {"created", created},
+            {"model", model_id},
+            {"choices", json::array({
+                {
+                    {"index", 0},
+                    {"delta", {
+                        {"tool_calls", json::array({
+                            {
+                                {"index", static_cast<int>(i)},
+                                {"id", tool_call.value("id", "")},
+                                {"type", tool_call.value("type", "function")},
+                                {"function", tool_call["function"]}
+                            }
+                        })}
+                    }},
+                    {"finish_reason", nullptr}
+                }
+            })}
+        };
+        chunks.push_back(chunk.dump());
+    }
+
+    return chunks;
 }
 
 }  // namespace ryzenai

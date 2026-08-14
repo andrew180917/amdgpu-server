@@ -813,24 +813,15 @@ void RyzenAIServer::handleChatCompletions(const httplib::Request& req, httplib::
                         
                         // Extract and send tool calls if tools were provided
                         if (has_tools) {
-                            auto [extracted_tool_calls, cleaned_text] = extractToolCalls(full_response);
+                            auto extraction = extractToolCalls(full_response);
+                            const auto& extracted_tool_calls = extraction.first;
                             if (!extracted_tool_calls.empty()) {
                                 std::cout << "[Server] Extracted " << extracted_tool_calls.size() << " tool call(s) from stream" << std::endl;
-                                
-                                // Send tool calls as delta chunks
-                                for (const auto& tool_call : extracted_tool_calls) {
-                                    // Escape arguments for JSON
-                                    std::string tool_call_args = tool_call.arguments.dump();
-                                    std::string escaped_args = escapeJsonString(tool_call_args);
-                                    
-                                    std::string tool_call_chunk = 
-                                        "data: {\"id\":\"chatcmpl-" + std::to_string(std::time(nullptr)) + 
-                                        "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(std::time(nullptr)) + 
-                                        ",\"model\":\"" + model_id + 
-                                        "\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"-\",\"type\":\"function\",\"function\":{\"name\":\"" + tool_call.name + 
-                                        "\",\"arguments\":\"" + escaped_args + "\"}}]},\"finish_reason\":null}]}\n\n";
-                                    
-                                    sink.write(tool_call_chunk.c_str(), tool_call_chunk.size());
+
+                                json openai_tool_calls = formatToolCallsForOpenAI(extracted_tool_calls);
+                                for (const std::string& chunk_json : buildToolCallStreamChunks(openai_tool_calls, model_id)) {
+                                    std::string chunk_str = "data: " + chunk_json + "\n\n";
+                                    sink.write(chunk_str.c_str(), chunk_str.size());
                                 }
                             }
                         }

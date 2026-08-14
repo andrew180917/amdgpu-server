@@ -22,5 +22,10 @@ std::pair<std::vector<ToolCall>, std::string> extractToolCalls(const std::string
 // Format tool calls in OpenAI API format
 json formatToolCallsForOpenAI(const std::vector<ToolCall>& tool_calls);
 
+// Build chat.completion.chunk JSON payloads (without the "data: " prefix) for
+// streaming tool_calls deltas. Uses the same OpenAI shape as formatToolCallsForOpenAI.
+std::vector<std::string> buildToolCallStreamChunks(const json& openai_tool_calls,
+                                                   const std::string& model_id);
+
 } // namespace ryzenai
 
