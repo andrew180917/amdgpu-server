@@ -1133,7 +1133,7 @@ void RyzenAIServer::handleResponses(const httplib::Request& req, httplib::Respon
                 top_k, repeat_penalty, {}
             );
             
-            std::string model_name = model;
+            std::string model_name = escapeJsonString(model);
             
             res.set_chunked_content_provider(
                 "text/event-stream",
