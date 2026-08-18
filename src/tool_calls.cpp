@@ -2,6 +2,7 @@
 #include <iostream>
 #include <ctime>
 #include <optional>
+#include <cctype>
 
 namespace ryzenai {
 
@@ -16,9 +17,35 @@ std::string trimWhitespace(const std::string& input) {
     return input.substr(start, end - start + 1);
 }
 
-bool isValidJsonEscapeChar(char c) {
-    return c == '"' || c == '\\' || c == '/' || c == 'b' ||
-           c == 'f' || c == 'n' || c == 'r' || c == 't' || c == 'u';
+bool isValidJsonEscapeSequence(const std::string& input, size_t backslash_index) {
+    if (backslash_index + 1 >= input.size()) {
+        return false;
+    }
+    const char next = input[backslash_index + 1];
+    switch (next) {
+        case '"':
+        case '\\':
+        case '/':
+        case 'b':
+        case 'f':
+        case 'n':
+        case 'r':
+        case 't':
+            return true;
+        case 'u':
+            // \u must be followed by exactly 4 hex digits; bare \users is not valid JSON.
+            if (backslash_index + 5 >= input.size()) {
+                return false;
+            }
+            for (size_t j = backslash_index + 2; j < backslash_index + 6; ++j) {
+                if (!std::isxdigit(static_cast<unsigned char>(input[j]))) {
+                    return false;
+                }
+            }
+            return true;
+        default:
+            return false;
+    }
 }
 
 // LLMs often emit literal newlines or Windows paths with single backslashes inside
@@ -49,7 +76,7 @@ std::string sanitizeJsonStringLiterals(const std::string& input) {
 
         // Inside a JSON string value
         if (c == '\\') {
-            if (i + 1 < input.size() && isValidJsonEscapeChar(input[i + 1])) {
+            if (isValidJsonEscapeSequence(input, i)) {
                 result += c;
                 escape_next = true;
             } else {
@@ -242,6 +269,7 @@ std::pair<std::vector<ToolCall>, std::string> extractToolCalls(const std::string
     std::smatch match;
     std::string search_text = text;
     size_t offset = 0;
+    size_t removed = 0;
 
     while (std::regex_search(search_text, match, closed_tool_call_pattern)) {
         const std::string tool_call_json = match[1].str();
@@ -250,7 +278,8 @@ std::pair<std::vector<ToolCall>, std::string> extractToolCalls(const std::string
 
         if (auto tool_call = parseToolCallPayload(tool_call_json)) {
             tool_calls.push_back(*tool_call);
-            eraseMatch(cleaned_text, offset + match.position(), match.length());
+            eraseMatch(cleaned_text, offset + match.position() - removed, match.length());
+            removed += match.length();
         } else {
             std::cerr << "[WARNING] Failed to parse tool call JSON after repair attempts" << std::endl;
         }
@@ -266,6 +295,7 @@ std::pair<std::vector<ToolCall>, std::string> extractToolCalls(const std::string
 
     search_text = cleaned_text;
     offset = 0;
+    removed = 0;
     while (std::regex_search(search_text, match, open_tool_call_pattern)) {
         const std::string tool_call_json = match[1].str();
 
@@ -273,7 +303,8 @@ std::pair<std::vector<ToolCall>, std::string> extractToolCalls(const std::string
 
         if (auto tool_call = parseToolCallPayload(tool_call_json)) {
             tool_calls.push_back(*tool_call);
-            eraseMatch(cleaned_text, offset + match.position(), match.length());
+            eraseMatch(cleaned_text, offset + match.position() - removed, match.length());
+            removed += match.length();
         } else {
             std::cerr << "[WARNING] Failed to parse unclosed tool call JSON after repair attempts" << std::endl;
         }
@@ -289,6 +320,7 @@ std::pair<std::vector<ToolCall>, std::string> extractToolCalls(const std::string
 
     search_text = cleaned_text;
     offset = 0;
+    removed = 0;
 
     while (std::regex_search(search_text, match, mistral_pattern)) {
         const std::string tool_calls_array_json = "[" + match[1].str() + "]";
@@ -300,7 +332,8 @@ std::pair<std::vector<ToolCall>, std::string> extractToolCalls(const std::string
                     tool_calls.push_back(*tool_call);
                 }
             }
-            eraseMatch(cleaned_text, offset + match.position(), match.length());
+            eraseMatch(cleaned_text, offset + match.position() - removed, match.length());
+            removed += match.length();
         } else {
             std::cerr << "[WARNING] Failed to parse [TOOL_CALLS] JSON after repair attempts" << std::endl;
         }

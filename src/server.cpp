@@ -343,7 +343,7 @@ void RyzenAIServer::handleCompletions(const httplib::Request& req, httplib::Resp
             );
             
             std::string prompt = comp_req.prompt;
-            std::string model_id = model_id_;
+            std::string model_id = escapeJsonString(model_id_);
             
             // Count prompt tokens before streaming
             int prompt_tokens = inference_engine_->countTokens(prompt);
@@ -658,6 +658,7 @@ void RyzenAIServer::handleChatCompletions(const httplib::Request& req, httplib::
             );
             
             std::string model_id = model_id_;
+            std::string escaped_model_id = escapeJsonString(model_id);
             bool has_tools = !chat_req.tools.empty();
             
             // Count prompt tokens before streaming
@@ -665,7 +666,7 @@ void RyzenAIServer::handleChatCompletions(const httplib::Request& req, httplib::
             
             res.set_chunked_content_provider(
                 "text/event-stream",
-                [this, prompt, params, model_id, has_tools, prompt_tokens](size_t offset, httplib::DataSink& sink) {
+                [this, prompt, params, model_id, escaped_model_id, has_tools, prompt_tokens](size_t offset, httplib::DataSink& sink) {
                     if (offset > 0) return false; // Only run once
                     
                     try {
@@ -683,7 +684,7 @@ void RyzenAIServer::handleChatCompletions(const httplib::Request& req, httplib::
                         
                         // Generate and send tokens in real-time
                         inference_engine_->streamComplete(prompt, params, 
-                            [&sink, model_id, &token_count, &full_response, &reasoning_parser, &first_token_received, &first_token_time](const std::string& token, bool is_final) -> bool {
+                            [&sink, escaped_model_id, &token_count, &full_response, &reasoning_parser, &first_token_received, &first_token_time](const std::string& token, bool is_final) -> bool {
                                 // Track time to first token
                                 if (!first_token_received && !token.empty()) {
                                     first_token_time = std::chrono::high_resolution_clock::now();
@@ -706,7 +707,7 @@ void RyzenAIServer::handleChatCompletions(const httplib::Request& req, httplib::
                                     std::string reasoning_chunk_json = 
                                         "{\"id\":\"chatcmpl-" + std::to_string(std::time(nullptr)) + 
                                         "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(std::time(nullptr)) + 
-                                        ",\"model\":\"" + model_id + 
+                                        ",\"model\":\"" + escaped_model_id + 
                                         "\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"" + escaped_reasoning + 
                                         "\"},\"finish_reason\":null}]}";
                                     
@@ -723,7 +724,7 @@ void RyzenAIServer::handleChatCompletions(const httplib::Request& req, httplib::
                                     std::string chunk_json = 
                                         "{\"id\":\"chatcmpl-" + std::to_string(std::time(nullptr)) + 
                                         "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(std::time(nullptr)) + 
-                                        ",\"model\":\"" + model_id + 
+                                        ",\"model\":\"" + escaped_model_id + 
                                         "\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"" + escaped_content + 
                                         "\"},\"finish_reason\":" + finish_reason + "}]}";
                                     
@@ -743,7 +744,7 @@ void RyzenAIServer::handleChatCompletions(const httplib::Request& req, httplib::
                                         std::string reasoning_chunk_json = 
                                             "{\"id\":\"chatcmpl-" + std::to_string(std::time(nullptr)) + 
                                             "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(std::time(nullptr)) + 
-                                            ",\"model\":\"" + model_id + 
+                                            ",\"model\":\"" + escaped_model_id + 
                                             "\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"" + escaped_reasoning + 
                                             "\"},\"finish_reason\":null}]}";
                                         
@@ -759,7 +760,7 @@ void RyzenAIServer::handleChatCompletions(const httplib::Request& req, httplib::
                                         std::string chunk_json = 
                                             "{\"id\":\"chatcmpl-" + std::to_string(std::time(nullptr)) + 
                                             "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(std::time(nullptr)) + 
-                                            ",\"model\":\"" + model_id + 
+                                            ",\"model\":\"" + escaped_model_id + 
                                             "\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"" + escaped_content + 
                                             "\"},\"finish_reason\":\"stop\"}]}";
                                         
@@ -789,7 +790,7 @@ void RyzenAIServer::handleChatCompletions(const httplib::Request& req, httplib::
                             std::string reasoning_chunk_json = 
                                 "{\"id\":\"chatcmpl-" + std::to_string(std::time(nullptr)) + 
                                 "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(std::time(nullptr)) + 
-                                ",\"model\":\"" + model_id + 
+                                ",\"model\":\"" + escaped_model_id + 
                                 "\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"" + escaped_reasoning + 
                                 "\"},\"finish_reason\":null}]}";
                             
@@ -803,7 +804,7 @@ void RyzenAIServer::handleChatCompletions(const httplib::Request& req, httplib::
                             std::string chunk_json = 
                                 "{\"id\":\"chatcmpl-" + std::to_string(std::time(nullptr)) + 
                                 "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(std::time(nullptr)) + 
-                                ",\"model\":\"" + model_id + 
+                                ",\"model\":\"" + escaped_model_id + 
                                 "\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"" + escaped_content + 
                                 "\"},\"finish_reason\":\"stop\"}]}";
                             
@@ -838,7 +839,7 @@ void RyzenAIServer::handleChatCompletions(const httplib::Request& req, httplib::
                         std::string usage_chunk = 
                             "data: {\"id\":\"chatcmpl-" + std::to_string(std::time(nullptr)) + 
                             "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(std::time(nullptr)) + 
-                            ",\"model\":\"" + model_id + 
+                            ",\"model\":\"" + escaped_model_id + 
                             "\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":null}]," +
                             "\"usage\":{" +
                                 "\"prompt_tokens\":" + std::to_string(prompt_tokens) + "," +
@@ -989,6 +990,7 @@ void RyzenAIServer::handleMultimodalChat(const json& request_json,
     };
 
     const std::string model_id = model_id_;
+    const std::string escaped_model_id = escapeJsonString(model_id);
 
     if (chat_req.stream) {
         res.set_header("Content-Type", "text/event-stream");
@@ -1000,16 +1002,16 @@ void RyzenAIServer::handleMultimodalChat(const json& request_json,
 
         res.set_chunked_content_provider(
             "text/event-stream",
-            [this, prompt, images, params, model_id, prompt_tokens, escapeJson](size_t offset, httplib::DataSink& sink) {
+            [this, prompt, images, params, escaped_model_id, prompt_tokens, escapeJson](size_t offset, httplib::DataSink& sink) {
                 if (offset > 0) return false;
                 try {
                     int token_count = 0;
                     inference_engine_->streamCompleteMultimodal(prompt, images, params,
-                        [&sink, model_id, &token_count, &escapeJson](const std::string& token, bool /*is_final*/) -> bool {
+                        [&sink, escaped_model_id, &token_count, &escapeJson](const std::string& token, bool /*is_final*/) -> bool {
                             std::string chunk =
                                 "data: {\"id\":\"chatcmpl-" + std::to_string(std::time(nullptr)) +
                                 "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(std::time(nullptr)) +
-                                ",\"model\":\"" + model_id +
+                                ",\"model\":\"" + escaped_model_id +
                                 "\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"" + escapeJson(token) +
                                 "\"},\"finish_reason\":null}]}\n\n";
                             token_count++;
@@ -1019,7 +1021,7 @@ void RyzenAIServer::handleMultimodalChat(const json& request_json,
                     std::string final_chunk =
                         "data: {\"id\":\"chatcmpl-" + std::to_string(std::time(nullptr)) +
                         "\",\"object\":\"chat.completion.chunk\",\"created\":" + std::to_string(std::time(nullptr)) +
-                        ",\"model\":\"" + model_id +
+                        ",\"model\":\"" + escaped_model_id +
                         "\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]," +
                         "\"usage\":{\"prompt_tokens\":" + std::to_string(prompt_tokens) +
                         ",\"completion_tokens\":" + std::to_string(token_count) +
@@ -1213,7 +1215,8 @@ void RyzenAIServer::handleResponses(const httplib::Request& req, httplib::Respon
                         
                     } catch (const std::exception& e) {
                         std::cerr << "[Server] Error in streaming responses: " << e.what() << std::endl;
-                        std::string error_msg = "data: {\"error\":\"" + std::string(e.what()) + "\"}\n\n";
+                        json error_chunk = createErrorResponse(e.what(), "inference_error");
+                        std::string error_msg = "data: " + error_chunk.dump() + "\n\n";
                         sink.write(error_msg.c_str(), error_msg.size());
                         return false;
                     }

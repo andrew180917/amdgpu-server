@@ -1,7 +1,7 @@
 // Standalone regression test for tool call JSON repair.
-// Build: c++ -std=c++17 -I../include -I../external/json test_tool_calls_repair.cpp ../src/tool_calls.cpp -o test_tool_calls_repair
+// Build: c++ -std=c++17 -I../include -I../external/json tools/test_tool_calls_repair.cpp src/tool_calls.cpp -o test_tool_calls_repair
 #include "ryzenai/tool_calls.h"
-#include <nlohmann/json.hpp>
+#include <json.hpp>
 #include <cassert>
 #include <iostream>
 
@@ -48,6 +48,42 @@ int main() {
     if (file_text.find("#include <iostream>") == std::string::npos ||
         file_text.find("Hello, World!") == std::string::npos) {
         std::cerr << "Unexpected file_text: " << file_text << std::endl;
+        return 1;
+    }
+
+    // Multiple tool calls: cleaned text must keep prose between/after markup.
+    const std::string multi_tool_text =
+        "Sure. <tool_call>{\"name\":\"a\",\"arguments\":{}}</tool_call> and then "
+        "<tool_call>{\"name\":\"b\",\"arguments\":{}}</tool_call> Done.";
+    auto [multi_calls, multi_cleaned] = ryzenai::extractToolCalls(multi_tool_text);
+    if (multi_calls.size() != 2 ||
+        multi_calls[0].name != "a" ||
+        multi_calls[1].name != "b") {
+        std::cerr << "Failed multi tool call extraction" << std::endl;
+        return 1;
+    }
+    if (multi_cleaned.find(" and then ") == std::string::npos ||
+        multi_cleaned.find(" Done.") == std::string::npos ||
+        multi_cleaned.find("<tool_call>") != std::string::npos) {
+        std::cerr << "Unexpected cleaned text for multi tool calls: " << multi_cleaned << std::endl;
+        return 1;
+    }
+
+    // Windows paths with \users-style segments must survive sanitization.
+    const std::string users_path_text =
+        "Here you go\n"
+        "<tool_call>\n"
+        "{\"name\": \"read_file\", \"arguments\": {\"path\": \"C:\\users\\me\\data.txt\"}}\n"
+        "</tool_call>\n";
+    auto [users_calls, users_cleaned] = ryzenai::extractToolCalls(users_path_text);
+    if (users_calls.size() != 1 ||
+        users_calls[0].name != "read_file" ||
+        !users_calls[0].arguments.contains("path") ||
+        users_calls[0].arguments["path"] != "C:\\users\\me\\data.txt") {
+        std::cerr << "Failed \\users path tool call extraction: "
+                  << users_calls.size() << " calls, args="
+                  << (users_calls.empty() ? "none" : users_calls[0].arguments.dump())
+                  << std::endl;
         return 1;
     }
 
