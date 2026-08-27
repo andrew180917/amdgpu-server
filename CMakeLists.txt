@@ -194,10 +194,14 @@ else()
 
     # Copy the package runtime .so (preserving the SONAME symlink chain) and the
     # bin/ JIT toolchain (clang / lld / hip-compiler, used by the EP at runtime)
-    # next to the binary. cp -a preserves symlinks that individual copies lose.
+    # next to the binary. cp -a preserves the symlinks individual copies lose;
+    # it is invoked directly rather than through a shell, which the minimal
+    # Linux runner image does not reliably provide.
     add_custom_command(TARGET amdgpu-server POST_BUILD
-        COMMAND bash -c "cp -a '${AMDGPU_PKG_ROOT}/lib/.' '$<TARGET_FILE_DIR:amdgpu-server>/' && cp -a '${AMDGPU_PKG_ROOT}/bin/.' '$<TARGET_FILE_DIR:amdgpu-server>/'"
+        COMMAND cp -a "${AMDGPU_PKG_ROOT}/lib/." "$<TARGET_FILE_DIR:amdgpu-server>/"
+        COMMAND cp -a "${AMDGPU_PKG_ROOT}/bin/." "$<TARGET_FILE_DIR:amdgpu-server>/"
         COMMENT "Copying AMD GPU package runtime (.so + JIT toolchain) next to amdgpu-server"
+        VERBATIM
     )
 
     add_custom_command(TARGET amdgpu-server POST_BUILD
