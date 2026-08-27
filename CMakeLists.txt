@@ -35,6 +35,11 @@ if(NOT DEFINED AMDGPU_PKG_ROOT)
         "or set the AMDGPU_PKG_ROOT environment variable.")
 endif()
 
+# POST_BUILD commands run from the build directory, so a relative root would
+# resolve against the wrong base. Normalise against the source dir up front.
+get_filename_component(AMDGPU_PKG_ROOT "${AMDGPU_PKG_ROOT}" ABSOLUTE
+                       BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+
 # Pinned OGA version whose headers we vendor (package ships OGA 0.14.0).
 set(OGA_VERSION "0.14.0")
 

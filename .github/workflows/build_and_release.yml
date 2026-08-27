@@ -104,6 +104,10 @@ jobs:
           so=$(find pkg -name libonnxruntime-genai.so | head -1)
           test -n "$so" || { echo "libonnxruntime-genai.so not found"; exit 1; }
           root=$(dirname "$(dirname "$so")")   # parent of lib/
+          # Must be absolute: CMake POST_BUILD commands run from the build dir,
+          # so a relative root would resolve to build/pkg. The Windows step
+          # already exports an absolute path.
+          root=$(cd "$root" && pwd)
           echo "AMDGPU_PKG_ROOT=$root" >> "$GITHUB_ENV"
 
       - name: (linux) Ensure cmake is available
