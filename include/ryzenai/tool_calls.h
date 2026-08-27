@@ -15,6 +15,11 @@ struct ToolCall {
     json arguments;
 };
 
+// Escape a raw string so it is safe to embed in a JSON string literal.
+// Handles quotes, backslashes, the named control escapes, and any remaining
+// character below 0x20 as \u00XX.
+std::string escapeJsonString(const std::string& s);
+
 // Extract tool calls from generated text (Qwen format: <tool_call>...</tool_call>)
 // Returns: pair of (extracted_tool_calls, cleaned_text_without_tool_calls)
 std::pair<std::vector<ToolCall>, std::string> extractToolCalls(const std::string& text);

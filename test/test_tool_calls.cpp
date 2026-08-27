@@ -1,5 +1,5 @@
 // Standalone regression test for tool call JSON repair.
-// Build: c++ -std=c++17 -I../include -I../external/json tools/test_tool_calls_repair.cpp src/tool_calls.cpp -o test_tool_calls_repair
+// Built and run by CTest: cmake -S . -B build && cmake --build build && ctest --test-dir build
 #include "ryzenai/tool_calls.h"
 #include <json.hpp>
 #include <cassert>
@@ -134,6 +134,42 @@ int main() {
         stream_chunk["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] != "create") {
         std::cerr << "Unexpected stream chunk payload: " << stream_chunks[0] << std::endl;
         return 1;
+    }
+
+
+    // Raw control characters inside a string value are illegal JSON. The repair
+    // path must escape them rather than drop the tool call on the floor.
+    const std::string control_char_text =
+        "Writing\n"
+        "<tool_call>\n"
+        "{\"name\": \"create\", \"arguments\": {\"file_text\": \"a\x08" "b\x0c" "c\x01" "d\"}}\n"
+        "</tool_call>\n";
+    auto [ctrl_calls, ctrl_cleaned] = ryzenai::extractToolCalls(control_char_text);
+    if (ctrl_calls.size() != 1 || !ctrl_calls[0].arguments.contains("file_text")) {
+        std::cerr << "Failed control-char tool call extraction" << std::endl;
+        return 1;
+    }
+    {
+        const std::string file_text_ctrl = ctrl_calls[0].arguments["file_text"];
+        const std::string expected_ctrl = std::string("a\x08") + "b\x0c" + "c\x01" + "d";
+        if (file_text_ctrl != expected_ctrl) {
+            std::cerr << "Control characters not round-tripped: "
+                      << json(file_text_ctrl).dump() << std::endl;
+            return 1;
+        }
+    }
+
+    // escapeJsonString is the emit-side counterpart: whatever it returns must
+    // parse back to the input when wrapped in quotes.
+    {
+        const std::string raw =
+            std::string("tab\there \"quoted\" back\\slash bell\x07 nl\n end");
+        const std::string escaped = ryzenai::escapeJsonString(raw);
+        const json parsed = json::parse("\"" + escaped + "\"");
+        if (parsed.get<std::string>() != raw) {
+            std::cerr << "escapeJsonString round-trip failed: " << escaped << std::endl;
+            return 1;
+        }
     }
 
     std::cout << "tool call repair tests passed" << std::endl;

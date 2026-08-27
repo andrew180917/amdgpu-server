@@ -8,6 +8,25 @@ namespace ryzenai {
 
 namespace {
 
+// JSON forbids raw control characters inside string literals. Both the repair
+// path (model output we are trying to salvage) and the emit path (strings we
+// hand-build into SSE frames) need the same mapping, so it lives here once.
+void appendEscapedControlChar(std::string& out, unsigned char c) {
+    static constexpr char hex[] = "0123456789abcdef";
+    switch (c) {
+        case '\b': out += "\\b"; return;
+        case '\f': out += "\\f"; return;
+        case '\n': out += "\\n"; return;
+        case '\r': out += "\\r"; return;
+        case '\t': out += "\\t"; return;
+        default:
+            out += "\\u00";
+            out += hex[(c >> 4) & 0x0f];
+            out += hex[c & 0x0f];
+            return;
+    }
+}
+
 std::string trimWhitespace(const std::string& input) {
     size_t start = input.find_first_not_of(" \t\n\r");
     if (start == std::string::npos) {
@@ -17,7 +36,15 @@ std::string trimWhitespace(const std::string& input) {
     return input.substr(start, end - start + 1);
 }
 
-bool isValidJsonEscapeSequence(const std::string& input, size_t backslash_index) {
+// Only reached from the repair path, i.e. after strict json::parse has already
+// rejected the text. In that situation a lone backslash is far more often an
+// under-escaped Windows path separator ("C:\tmp", "C:\build") than a deliberate
+// \t / \n / \r / \b / \f escape, so those are NOT treated as structural and get
+// doubled into literal backslashes by the caller.
+//
+// Quote, backslash, solidus and \uXXXX are structural -- they decide where the
+// string ends -- so they must always be preserved as escapes.
+bool isStructuralJsonEscape(const std::string& input, size_t backslash_index) {
     if (backslash_index + 1 >= input.size()) {
         return false;
     }
@@ -26,11 +53,6 @@ bool isValidJsonEscapeSequence(const std::string& input, size_t backslash_index)
         case '"':
         case '\\':
         case '/':
-        case 'b':
-        case 'f':
-        case 'n':
-        case 'r':
-        case 't':
             return true;
         case 'u':
             // \u must be followed by exactly 4 hex digits; bare \users is not valid JSON.
@@ -76,7 +98,7 @@ std::string sanitizeJsonStringLiterals(const std::string& input) {
 
         // Inside a JSON string value
         if (c == '\\') {
-            if (isValidJsonEscapeSequence(input, i)) {
+            if (isStructuralJsonEscape(input, i)) {
                 result += c;
                 escape_next = true;
             } else {
@@ -85,12 +107,8 @@ std::string sanitizeJsonStringLiterals(const std::string& input) {
         } else if (c == '"') {
             in_string = false;
             result += c;
-        } else if (c == '\n') {
-            result += "\\n";
-        } else if (c == '\r') {
-            result += "\\r";
-        } else if (c == '\t') {
-            result += "\\t";
+        } else if (static_cast<unsigned char>(c) < 0x20) {
+            appendEscapedControlChar(result, static_cast<unsigned char>(c));
         } else {
             result += c;
         }
@@ -253,6 +271,22 @@ void eraseMatch(std::string& cleaned_text, size_t match_pos, size_t match_len) {
 }
 
 }  // namespace
+
+std::string escapeJsonString(const std::string& s) {
+    std::string escaped;
+    escaped.reserve(s.size() + 8);
+    for (unsigned char c : s) {
+        if (c == '\\' || c == '"') {
+            escaped += '\\';
+            escaped += static_cast<char>(c);
+        } else if (c < 0x20) {
+            appendEscapedControlChar(escaped, c);
+        } else {
+            escaped.push_back(static_cast<char>(c));
+        }
+    }
+    return escaped;
+}
 
 std::pair<std::vector<ToolCall>, std::string> extractToolCalls(const std::string& text) {
     std::vector<ToolCall> tool_calls;

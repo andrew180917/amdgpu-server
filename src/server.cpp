@@ -12,33 +12,6 @@ namespace ryzenai {
 
 namespace {
 
-std::string escapeJsonString(const std::string& s) {
-    static constexpr char hex[] = "0123456789abcdef";
-    std::string escaped;
-    escaped.reserve(s.size() + 8);
-    for (unsigned char c : s) {
-        switch (c) {
-            case '\\': escaped += "\\\\"; break;
-            case '"':  escaped += "\\\""; break;
-            case '\b': escaped += "\\b";  break;
-            case '\f': escaped += "\\f";  break;
-            case '\n': escaped += "\\n";  break;
-            case '\r': escaped += "\\r";  break;
-            case '\t': escaped += "\\t";  break;
-            default:
-                if (c < 0x20) {
-                    escaped += "\\u00";
-                    escaped += hex[(c >> 4) & 0x0f];
-                    escaped += hex[c & 0x0f];
-                } else {
-                    escaped.push_back(static_cast<char>(c));
-                }
-                break;
-        }
-    }
-    return escaped;
-}
-
 // Minimal base64 decoder for image data URLs.
 std::string base64_decode(const std::string& input) {
     static const std::string chars =

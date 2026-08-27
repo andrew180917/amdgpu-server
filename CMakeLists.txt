@@ -209,6 +209,29 @@ endif()
 
 install(TARGETS amdgpu-server RUNTIME DESTINATION bin)
 
+# ---------------------------------------------------------------------------
+# Tests. tool_calls.cpp has no OGA dependency, so the tool-call suite builds and
+# runs on any machine -- no GPU package and no AMD hardware required.
+# ---------------------------------------------------------------------------
+option(BUILD_TESTING "Build the test suite" ON)
+if(BUILD_TESTING)
+    enable_testing()
+
+    add_executable(test_tool_calls
+        test/test_tool_calls.cpp
+        src/tool_calls.cpp
+    )
+    target_include_directories(test_tool_calls PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${JSON_DIR}
+    )
+    if(MSVC)
+        target_compile_options(test_tool_calls PRIVATE /W4)
+    endif()
+
+    add_test(NAME ToolCalls COMMAND test_tool_calls)
+endif()
+
 message(STATUS "==========================================================")
 message(STATUS "AMD GPU LLM Server Configuration:")
 message(STATUS "  Build type:        ${CMAKE_BUILD_TYPE}")
