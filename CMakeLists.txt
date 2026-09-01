@@ -188,19 +188,26 @@ else()
     target_link_libraries(amdgpu-server PRIVATE ${CMAKE_DL_LIBS})
     target_link_options(amdgpu-server PRIVATE "-Wl,--disable-new-dtags")
     set_target_properties(amdgpu-server PROPERTIES
-        BUILD_RPATH "$ORIGIN"
-        INSTALL_RPATH "$ORIGIN"
+        BUILD_RPATH "$ORIGIN/lib:$ORIGIN"
+        INSTALL_RPATH "$ORIGIN/lib:$ORIGIN"
     )
 
-    # Copy the package runtime .so (preserving the SONAME symlink chain) and the
-    # bin/ JIT toolchain (clang / lld / hip-compiler, used by the EP at runtime)
-    # next to the binary. cp -a preserves the symlinks individual copies lose;
-    # it is invoked directly rather than through a shell, which the minimal
-    # Linux runner image does not reliably provide.
+    # Mirror the package's own bin/ + lib/ layout next to the binary instead of
+    # flattening both into one directory. Flattening collides (bin/clang is an
+    # executable, lib/clang/ is a directory) and would break the JIT toolchain
+    # regardless: clang resolves its resource headers as <exedir>/../lib/clang/<ver>.
+    # Preserving the package's internal structure keeps every relative lookup
+    # inside it valid, whatever those lookups turn out to be.
+    #
+    # cp -a preserves the SONAME symlink chain that individual copies lose, and is
+    # invoked directly rather than through a shell -- the minimal Linux runner
+    # image has no bash. Stale trees are removed first so re-runs do not nest.
     add_custom_command(TARGET amdgpu-server POST_BUILD
-        COMMAND cp -a "${AMDGPU_PKG_ROOT}/lib/." "$<TARGET_FILE_DIR:amdgpu-server>/"
-        COMMAND cp -a "${AMDGPU_PKG_ROOT}/bin/." "$<TARGET_FILE_DIR:amdgpu-server>/"
-        COMMENT "Copying AMD GPU package runtime (.so + JIT toolchain) next to amdgpu-server"
+        COMMAND ${CMAKE_COMMAND} -E rm -rf
+            "$<TARGET_FILE_DIR:amdgpu-server>/lib" "$<TARGET_FILE_DIR:amdgpu-server>/bin"
+        COMMAND cp -a "${AMDGPU_PKG_ROOT}/lib" "${AMDGPU_PKG_ROOT}/bin"
+            "$<TARGET_FILE_DIR:amdgpu-server>/"
+        COMMENT "Copying AMD GPU package runtime (lib/ + bin/) next to amdgpu-server"
         VERBATIM
     )
 
