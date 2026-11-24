@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
-project(amdgpu-server VERSION 0.2.0 LANGUAGES CXX)
+# The version tracks the ROCm/hip-ep release the server is built against.
+project(amdgpu-server VERSION 0.5.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,18 +21,18 @@ endif()
 find_package(Threads REQUIRED)
 
 # ---------------------------------------------------------------------------
-# AMD GPU package (from ROCm/hip-ep releases): the extracted gpu-test-package.
+# AMD GPU package (from ROCm/hip-ep releases): the extracted hipep_<version>_<os>.zip.
 #   Windows: bin/onnxruntime-genai.dll + EP/ROCm DLLs (no import lib, no headers)
 #   Linux:   lib/libonnxruntime-genai.so + EP/ROCm .so ; bin/ JIT toolchain
 # Provide the directory via the AMDGPU_PKG_ROOT env var (preferred) or
 # -DAMDGPU_PKG_ROOT=...
 # ---------------------------------------------------------------------------
 if(DEFINED ENV{AMDGPU_PKG_ROOT})
-    set(AMDGPU_PKG_ROOT "$ENV{AMDGPU_PKG_ROOT}" CACHE PATH "Path to extracted gpu-test-package" FORCE)
+    set(AMDGPU_PKG_ROOT "$ENV{AMDGPU_PKG_ROOT}" CACHE PATH "Path to extracted HIP EP package" FORCE)
 endif()
 if(NOT DEFINED AMDGPU_PKG_ROOT)
     message(FATAL_ERROR "AMDGPU_PKG_ROOT is not set. Point it at the extracted "
-        "gpu-test-package directory, e.g. -DAMDGPU_PKG_ROOT=/path/to/gpu-test-package "
+        "HIP EP package directory, e.g. -DAMDGPU_PKG_ROOT=/path/to/hipep_0.5.3_windows "
         "or set the AMDGPU_PKG_ROOT environment variable.")
 endif()
 
@@ -40,8 +41,10 @@ endif()
 get_filename_component(AMDGPU_PKG_ROOT "${AMDGPU_PKG_ROOT}" ABSOLUTE
                        BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 
-# Pinned OGA version whose headers we vendor (package ships OGA 0.14.0).
-set(OGA_VERSION "0.14.0")
+# OGA version bundled with the HIP EP package. The package ships no headers, so
+# the matching ones are vendored in third_party/onnxruntime-genai.
+set(OGA_VERSION "0.19.0")
+set(OGA_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime-genai/include")
 
 # ---------------------------------------------------------------------------
 # Locate / prepare the ONNX Runtime GenAI import target (OGA_LIB).
@@ -93,24 +96,6 @@ else()
     message(STATUS "AMD GPU package lib: ${AMDGPU_PKG_LIB}")
     message(STATUS "ONNX Runtime GenAI library: ${OGA_LIB}")
 endif()
-
-# Vendor OGA C/C++ headers matching the package version (not shipped in it).
-set(OGA_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/external/oga")
-foreach(HDR ort_genai.h ort_genai_c.h)
-    if(NOT EXISTS "${OGA_INCLUDE}/${HDR}")
-        message(STATUS "Downloading ${HDR} (v${OGA_VERSION})...")
-        file(DOWNLOAD
-            "https://raw.githubusercontent.com/microsoft/onnxruntime-genai/v${OGA_VERSION}/src/${HDR}"
-            "${OGA_INCLUDE}/${HDR}"
-            SHOW_PROGRESS
-            STATUS HDR_DOWNLOAD_STATUS
-        )
-        list(GET HDR_DOWNLOAD_STATUS 0 HDR_DOWNLOAD_CODE)
-        if(NOT HDR_DOWNLOAD_CODE EQUAL 0)
-            message(FATAL_ERROR "Failed to download ${HDR}: ${HDR_DOWNLOAD_STATUS}")
-        endif()
-    endif()
-endforeach()
 
 # Header-only deps
 set(HTTPLIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/cpp-httplib")
@@ -167,20 +152,23 @@ if(WIN32)
     target_link_libraries(amdgpu-server PRIVATE ws2_32 wbemuuid ole32 oleaut32 shell32)
     set_target_properties(amdgpu-server PROPERTIES LINK_FLAGS "/SUBSYSTEM:CONSOLE")
 
-    # Copy the whole package bin/ (EP DLLs, ROCm runtime, rocblas/, hipblaslt/,
-    # hipdnn_plugins/) next to the exe so the loader resolves everything from its
-    # own directory.
+    # Stage the release layout: the package tree exactly as shipped, with the
+    # server built into its bin/ so the loader resolves every DLL from the exe's
+    # own directory. The tree is kept whole rather than flattened because that
+    # is the layout the EP is built and tested in, so every relative lookup
+    # inside it stays valid.
+    set(AMDGPU_STAGE_DIR "${CMAKE_BINARY_DIR}/package/$<CONFIG>")
+    set_target_properties(amdgpu-server PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${AMDGPU_STAGE_DIR}/bin"
+    )
     add_custom_command(TARGET amdgpu-server POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-            "${AMDGPU_PKG_BIN}" "$<TARGET_FILE_DIR:amdgpu-server>"
-        COMMENT "Copying AMD GPU package runtime (DLLs + ROCm + EP) next to amdgpu-server.exe"
-    )
-
-    add_custom_command(TARGET amdgpu-server POST_BUILD
+            "${AMDGPU_PKG_ROOT}" "${AMDGPU_STAGE_DIR}"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_CURRENT_SOURCE_DIR}/AMD_LICENSE
-            $<TARGET_FILE_DIR:amdgpu-server>/AMD_LICENSE
-        COMMENT "Copying AMD_LICENSE"
+            "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+            "${CMAKE_CURRENT_SOURCE_DIR}/AMD_LICENSE"
+            "${AMDGPU_STAGE_DIR}"
+        COMMENT "Staging the HIP EP package tree around amdgpu-server.exe"
     )
 else()
     # Linux: resolve the package .so via $ORIGIN so the binary is relocatable.
@@ -253,5 +241,9 @@ message(STATUS "AMD GPU LLM Server Configuration:")
 message(STATUS "  Build type:        ${CMAKE_BUILD_TYPE}")
 message(STATUS "  Package root:      ${AMDGPU_PKG_ROOT}")
 message(STATUS "  OGA version:       ${OGA_VERSION}")
-message(STATUS "  Output directory:  ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+if(WIN32)
+    message(STATUS "  Output directory:  ${CMAKE_BINARY_DIR}/package/<config>/bin")
+else()
+    message(STATUS "  Output directory:  ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+endif()
 message(STATUS "==========================================================")
