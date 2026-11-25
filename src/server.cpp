@@ -649,26 +649,27 @@ void RyzenAIServer::handleChatCompletions(const httplib::Request& req, httplib::
                         bool first_token_received = false;
                         int token_count = 0;
                         
-                        // Accumulate full response for tool call extraction
-                        std::string full_response;
+                        // With tools, tool-call markup is held back from the content
+                        // stream and sent as tool_calls once generation is complete.
+                        ToolCallStreamFilter tool_call_filter;
                         
                         // Create reasoning parser for streaming
                         ReasoningStreamParser reasoning_parser;
                         
                         // Generate and send tokens in real-time
                         inference_engine_->streamComplete(prompt, params, 
-                            [&sink, escaped_model_id, &token_count, &full_response, &reasoning_parser, &first_token_received, &first_token_time](const std::string& token, bool is_final) -> bool {
+                            [&sink, escaped_model_id, &token_count, has_tools, &tool_call_filter, &reasoning_parser, &first_token_received, &first_token_time](const std::string& token, bool is_final) -> bool {
                                 // Track time to first token
                                 if (!first_token_received && !token.empty()) {
                                     first_token_time = std::chrono::high_resolution_clock::now();
                                     first_token_received = true;
                                 }
                                 
-                                // Accumulate for tool call extraction
-                                full_response += token;
-                                
                                 // Process token through reasoning parser
                                 auto [reasoning_part, content_part] = reasoning_parser.processToken(token);
+                                if (has_tools) {
+                                    content_part = tool_call_filter.push(content_part);
+                                }
                                 
                                 auto escapeJson = [](const std::string& str) -> std::string {
                                     return escapeJsonString(str);
@@ -710,6 +711,9 @@ void RyzenAIServer::handleChatCompletions(const httplib::Request& req, httplib::
                                 // If this is the final token, flush any remaining buffered content
                                 if (is_final) {
                                     auto [final_reasoning, final_content] = reasoning_parser.flush();
+                                    if (has_tools) {
+                                        final_content = tool_call_filter.push(final_content);
+                                    }
                                     
                                     // Send any remaining reasoning content
                                     if (!final_reasoning.empty()) {
@@ -744,6 +748,12 @@ void RyzenAIServer::handleChatCompletions(const httplib::Request& req, httplib::
                                     }
                                 }
                                 
+                                // Nothing is written while tool-call markup is held back, so a
+                                // client that has gone away has to be detected explicitly.
+                                if (tool_call_filter.holding() && !sink.is_writable()) {
+                                    return false;
+                                }
+
                                 token_count++;
                                 return true; // Continue generation
                             }
@@ -753,6 +763,19 @@ void RyzenAIServer::handleChatCompletions(const httplib::Request& req, httplib::
                         // This handles the case where the last few tokens didn't trigger processing due to buffer size
                         auto [final_reasoning, final_content] = reasoning_parser.flush();
                         
+                        // Turn the held-back text into tool calls. What is left of it (prose, or
+                        // markup that did not parse) is sent as content, so no text is lost.
+                        std::vector<ToolCall> extracted_tool_calls;
+                        if (has_tools) {
+                            final_content = tool_call_filter.push(final_content);
+                            const std::string held = tool_call_filter.finish();
+                            if (!held.empty()) {
+                                auto extraction = extractToolCalls(held);
+                                extracted_tool_calls = std::move(extraction.first);
+                                final_content += extracted_tool_calls.empty() ? held : extraction.second;
+                            }
+                        }
+
                         auto escapeJson = [](const std::string& str) -> std::string {
                             return escapeJsonString(str);
                         };
@@ -785,18 +808,14 @@ void RyzenAIServer::handleChatCompletions(const httplib::Request& req, httplib::
                             sink.write(chunk_str.c_str(), chunk_str.size());
                         }
                         
-                        // Extract and send tool calls if tools were provided
-                        if (has_tools) {
-                            auto extraction = extractToolCalls(full_response);
-                            const auto& extracted_tool_calls = extraction.first;
-                            if (!extracted_tool_calls.empty()) {
-                                std::cout << "[Server] Extracted " << extracted_tool_calls.size() << " tool call(s) from stream" << std::endl;
+                        // Send the tool calls found in the held-back text
+                        if (!extracted_tool_calls.empty()) {
+                            std::cout << "[Server] Extracted " << extracted_tool_calls.size() << " tool call(s) from stream" << std::endl;
 
-                                json openai_tool_calls = formatToolCallsForOpenAI(extracted_tool_calls);
-                                for (const std::string& chunk_json : buildToolCallStreamChunks(openai_tool_calls, model_id)) {
-                                    std::string chunk_str = "data: " + chunk_json + "\n\n";
-                                    sink.write(chunk_str.c_str(), chunk_str.size());
-                                }
+                            json openai_tool_calls = formatToolCallsForOpenAI(extracted_tool_calls);
+                            for (const std::string& chunk_json : buildToolCallStreamChunks(openai_tool_calls, model_id)) {
+                                std::string chunk_str = "data: " + chunk_json + "\n\n";
+                                sink.write(chunk_str.c_str(), chunk_str.size());
                             }
                         }
                         

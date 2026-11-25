@@ -1,8 +1,10 @@
 #include "ryzenai/tool_calls.h"
+#include <algorithm>
 #include <iostream>
 #include <ctime>
 #include <optional>
 #include <cctype>
+#include <string_view>
 
 namespace ryzenai {
 
@@ -270,6 +272,55 @@ void eraseMatch(std::string& cleaned_text, size_t match_pos, size_t match_len) {
     }
 }
 
+// The text every pattern in extractToolCalls() starts with, in lower case.
+// ToolCallStreamFilter holds streamed content back from the first of these on,
+// so a format added to extractToolCalls() needs its marker added here too.
+constexpr std::string_view kToolCallMarkers[] = {"<tool_call>", "[tool_calls]"};
+
+// The patterns in extractToolCalls() ignore case, so the markers do as well.
+char toLowerAscii(char c) {
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+// True if `text` continues at `pos` with the first `len` characters of `marker`.
+// The caller guarantees that `text` has at least `len` characters from `pos`.
+bool matchesMarkerStart(const std::string& text, size_t pos, std::string_view marker, size_t len) {
+    for (size_t i = 0; i < len; ++i) {
+        if (toLowerAscii(text[pos + i]) != marker[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Position of the first complete tool-call marker in `text`, or npos.
+size_t findToolCallMarker(const std::string& text) {
+    for (size_t pos = 0; pos < text.size(); ++pos) {
+        for (std::string_view marker : kToolCallMarkers) {
+            if (text.size() - pos >= marker.size() &&
+                matchesMarkerStart(text, pos, marker, marker.size())) {
+                return pos;
+            }
+        }
+    }
+    return std::string::npos;
+}
+
+// Length of the longest tail of `text` that is the start of a marker but not a
+// whole one, i.e. text that the next piece could still complete into a marker.
+size_t partialMarkerTailLength(const std::string& text) {
+    size_t longest = 0;
+    for (std::string_view marker : kToolCallMarkers) {
+        for (size_t len = std::min(text.size(), marker.size() - 1); len > longest; --len) {
+            if (matchesMarkerStart(text, text.size() - len, marker, len)) {
+                longest = len;
+                break;
+            }
+        }
+    }
+    return longest;
+}
+
 }  // namespace
 
 std::string escapeJsonString(const std::string& s) {
@@ -381,6 +432,36 @@ std::pair<std::vector<ToolCall>, std::string> extractToolCalls(const std::string
     std::cout << "[ToolCalls DEBUG] Extracted " << tool_calls.size() << " tool call(s)" << std::endl;
 
     return {tool_calls, cleaned_text};
+}
+
+std::string ToolCallStreamFilter::push(const std::string& text) {
+    buffer_ += text;
+    if (holding_) {
+        return "";
+    }
+
+    // Send everything up to a marker. Without one, keep back only a tail that
+    // the next piece could complete into a marker (a marker can arrive split
+    // over several pieces).
+    size_t send_len;
+    const size_t marker_pos = findToolCallMarker(buffer_);
+    if (marker_pos != std::string::npos) {
+        holding_ = true;
+        send_len = marker_pos;
+    } else {
+        send_len = buffer_.size() - partialMarkerTailLength(buffer_);
+    }
+
+    std::string to_send = buffer_.substr(0, send_len);
+    buffer_.erase(0, send_len);
+    return to_send;
+}
+
+std::string ToolCallStreamFilter::finish() {
+    std::string held;
+    held.swap(buffer_);
+    holding_ = false;
+    return held;
 }
 
 json formatToolCallsForOpenAI(const std::vector<ToolCall>& tool_calls) {

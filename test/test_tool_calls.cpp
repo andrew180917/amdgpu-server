@@ -4,8 +4,121 @@
 #include <json.hpp>
 #include <cassert>
 #include <iostream>
+#include <string>
+#include <utility>
+#include <vector>
 
 using json = nlohmann::json;
+
+namespace {
+
+// A reply as the model generates it, and how ToolCallStreamFilter has to split it.
+struct StreamCase {
+    const char* name;
+    std::string sent;         // content that may be streamed as it arrives
+    std::string held;         // text held back until the end of the stream
+    size_t tool_calls;        // calls extractToolCalls() finds in the held text
+    std::string leftover;     // content left of the held text after extraction
+};
+
+// Push `text` through the filter in pieces of `piece_size` characters, the way
+// generated tokens arrive. Returns {content sent while streaming, text held back}.
+std::pair<std::string, std::string> streamThroughFilter(const std::string& text, size_t piece_size) {
+    ryzenai::ToolCallStreamFilter filter;
+    std::string sent;
+    for (size_t pos = 0; pos < text.size(); pos += piece_size) {
+        sent += filter.push(text.substr(pos, piece_size));
+    }
+    return {sent, filter.finish()};
+}
+
+// Tool-call markup must not reach streamed content, whatever the token boundaries
+// are, and text that is not a tool call must come through complete and in order.
+bool testToolCallStreamFilter() {
+    const std::vector<StreamCase> cases = {
+        {"tool call only",
+         "",
+         "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"location\": \"Paris\"}}\n</tool_call>",
+         1, ""},
+        {"prose, then a tool call",
+         "I'll check the weather.\n",
+         "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"location\": \"Paris\"}}\n</tool_call>",
+         1, ""},
+        {"two tool calls with prose between and after",
+         "Sure. ",
+         "<tool_call>{\"name\":\"a\",\"arguments\":{}}</tool_call> and then "
+         "<tool_call>{\"name\":\"b\",\"arguments\":{}}</tool_call> Done.",
+         2, "and then  Done."},
+        {"tool call cut off before the closing tag",
+         "Creating file now\n",
+         "<tool_call>\n{\"name\": \"create\", \"arguments\": {\"path\": \"a.py\"}",
+         1, ""},
+        {"[TOOL_CALLS] format",
+         "Okay ",
+         "[TOOL_CALLS] [{\"name\": \"a\", \"arguments\": {}}]",
+         1, ""},
+        {"marker in upper case",
+         "x ",
+         "<TOOL_CALL>{\"name\":\"a\",\"arguments\":{}}</TOOL_CALL>",
+         1, ""},
+        {"marker right after the same character",
+         "<",
+         "<tool_call>{\"name\":\"a\",\"arguments\":{}}</tool_call>",
+         1, ""},
+        {"markup that is not a tool call",
+         "The tag ",
+         "<tool_call> marks a function call.",
+         0, "<tool_call> marks a function call."},
+        {"text that only looks like a marker",
+         "if a < b then x[0] = [1, 2]; <b>bold</b> <tool> [TOOL] [TOOL_CALL] <tool_calls> [x](y) done",
+         "",
+         0, ""},
+        {"reply ending in the start of a marker",
+         "The tag is ",
+         "<tool_ca",
+         0, "<tool_ca"},
+    };
+
+    for (const StreamCase& test : cases) {
+        const std::string text = test.sent + test.held;
+        for (size_t piece_size = 1; piece_size <= text.size(); ++piece_size) {
+            const auto [sent, held] = streamThroughFilter(text, piece_size);
+            if (sent != test.sent || held != test.held) {
+                std::cerr << "Stream filter, " << test.name << ", pieces of " << piece_size
+                          << ": sent " << json(sent).dump() << ", held " << json(held).dump() << std::endl;
+                return false;
+            }
+        }
+
+        // What the server does with the held text at the end of the stream.
+        auto [calls, cleaned] = ryzenai::extractToolCalls(test.held);
+        const std::string leftover = calls.empty() ? test.held : cleaned;
+        if (calls.size() != test.tool_calls || leftover != test.leftover) {
+            std::cerr << "Stream filter, " << test.name << ": " << calls.size()
+                      << " tool call(s), leftover " << json(leftover).dump() << std::endl;
+            return false;
+        }
+    }
+
+    // holding() tells the server that nothing is being written to the client.
+    ryzenai::ToolCallStreamFilter filter;
+    if (filter.holding() || filter.push("Calling <tool") != "Calling " || filter.holding()) {
+        std::cerr << "Stream filter holds before a marker is complete" << std::endl;
+        return false;
+    }
+    if (!filter.push("_call>{").empty() || !filter.holding()) {
+        std::cerr << "Stream filter does not hold after a marker" << std::endl;
+        return false;
+    }
+    if (filter.finish() != "<tool_call>{" || filter.holding() || filter.push("next") != "next") {
+        std::cerr << "Stream filter is not reset by finish()" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+}  // namespace
 
 int main() {
     // Reproduce colleague report: literal newlines in file_text + Windows path backslashes + missing closing brace.
@@ -170,6 +283,10 @@ int main() {
             std::cerr << "escapeJsonString round-trip failed: " << escaped << std::endl;
             return 1;
         }
+    }
+
+    if (!testToolCallStreamFilter()) {
+        return 1;
     }
 
     std::cout << "tool call repair tests passed" << std::endl;
