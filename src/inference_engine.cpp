@@ -484,10 +484,14 @@ std::string decodeNewTokens(OgaGenerator& generator, OgaTokenizerStream& stream,
 
 void InferenceEngine::resetChatSession() {
     std::lock_guard<std::mutex> lock(inference_mutex_);
+    discardChatGenerator();
+    std::cout << "[InferenceEngine] Chat KV cache reset" << std::endl;
+}
+
+void InferenceEngine::discardChatGenerator() {
     chat_generator_.reset();
     chat_cached_tokens_.clear();
     chat_params_valid_ = false;
-    std::cout << "[InferenceEngine] Chat KV cache reset" << std::endl;
 }
 
 OgaGenerator* InferenceEngine::prepareTextGenerator(const std::vector<int32_t>& input_ids,
@@ -671,6 +675,8 @@ std::string InferenceEngine::complete(const std::string& prompt, const Generatio
         return result;
         
     } catch (const std::exception& e) {
+        // A failed turn leaves the persistent generator in an unknown state.
+        if (reuse_kv) discardChatGenerator();
         throw std::runtime_error("Inference failed: " + std::string(e.what()));
     }
 }
@@ -762,6 +768,8 @@ void InferenceEngine::streamComplete(const std::string& prompt,
         std::cout << "[InferenceEngine] Generated " << token_count << " tokens (streaming)" << std::endl;
         
     } catch (const std::exception& e) {
+        // A failed turn leaves the persistent generator in an unknown state.
+        if (reuse_kv) discardChatGenerator();
         throw std::runtime_error("Streaming inference failed: " + std::string(e.what()));
     }
 }
