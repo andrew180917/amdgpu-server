@@ -1182,6 +1182,7 @@ void RyzenAIServer::handleResponses(const httplib::Request& req, httplib::Respon
                             std::cout << "[Server] Failed to write [DONE] marker" << std::endl;
                             return false;
                         }
+                        sink.done();
                         
                         std::cout << "[Server] Streaming responses completed successfully" << std::endl;
                         return true;
@@ -1191,6 +1192,7 @@ void RyzenAIServer::handleResponses(const httplib::Request& req, httplib::Respon
                         json error_chunk = createErrorResponse(e.what(), "inference_error");
                         std::string error_msg = "data: " + error_chunk.dump() + "\n\n";
                         sink.write(error_msg.c_str(), error_msg.size());
+                        sink.done();
                         return false;
                     }
                 }
